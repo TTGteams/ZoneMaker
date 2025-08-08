@@ -1,0 +1,64 @@
+# Git and version control
+.git
+.gitignore
+
+# Docker files (don't copy into container)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Environment and credentials
+.env
+.env.*
+
+# Documentation
+README*.md
+*.md
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+ENV/
+.venv/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs (will be mounted as volume)
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Original requirements file (we use the streamlined one)
+requirements.txt
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Test files
+test_*.py
+*_test.py 

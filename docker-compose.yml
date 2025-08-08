@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  zone-tracker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zone-tracker
+    restart: unless-stopped
+    
+    # Environment variables for database configuration
+    environment:
+      # Main Database (FXStrat) - for writing zones/indicators
+      - DB_SERVER=192.168.50.100
+      - DB_DATABASE=FXStrat
+      - DB_USERNAME=djaime
+      - DB_PASSWORD=Enrique30072000!3
+      - DB_DRIVER=ODBC Driver 17 for SQL Server
+      
+      # Historical Data Database (TTG) - for reading HistoData
+      - HISTODATA_SERVER=192.168.50.100
+      - HISTODATA_DATABASE=TTG
+      - HISTODATA_USERNAME=djaime
+      - HISTODATA_PASSWORD=Enrique30072000!3
+      - HISTODATA_DRIVER=ODBC Driver 17 for SQL Server
+      
+      # Application settings
+      - PYTHONUNBUFFERED=1
+      - TZ=America/Denver  # MST timezone for FX market hours
+    
+    # Volume mounts for persistent data
+    volumes:
+      - ./logs:/app/logs:rw
+      - /etc/localtime:/etc/localtime:ro  # Sync container time with host
+    
+    # Network configuration
+    networks:
+      - zone-tracker-network
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+networks:
+  zone-tracker-network:
+    driver: bridge
+
+# Optional: Add a monitoring service
+# Uncomment the section below if you want to add monitoring
+#
+#  watchtower:
+#    image: containrrr/watchtower
+#    container_name: zone-tracker-watchtower
+#    restart: unless-stopped
+#    volumes:
+#      - /var/run/docker.sock:/var/run/docker.sock
+#    environment:
+#      - WATCHTOWER_POLL_INTERVAL=3600  # Check for updates every hour
+#      - WATCHTOWER_CLEANUP=true
+#      - WATCHTOWER_INCLUDE_STOPPED=true
+#    networks:
+#      - zone-tracker-network 

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   zone-tracker:
     build:
@@ -15,14 +13,14 @@ services:
       - DB_DATABASE=FXStrat
       - DB_USERNAME=djaime
       - DB_PASSWORD=Enrique30072000!3
-      - DB_DRIVER=ODBC Driver 17 for SQL Server
+      - DB_DRIVER=ODBC Driver 18 for SQL Server
       
       # Historical Data Database (TTG) - for reading HistoData
       - HISTODATA_SERVER=192.168.50.100
       - HISTODATA_DATABASE=TTG
       - HISTODATA_USERNAME=djaime
       - HISTODATA_PASSWORD=Enrique30072000!3
-      - HISTODATA_DRIVER=ODBC Driver 17 for SQL Server
+      - HISTODATA_DRIVER=ODBC Driver 18 for SQL Server
       
       # Application settings
       - PYTHONUNBUFFERED=1

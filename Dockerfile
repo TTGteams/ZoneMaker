@@ -2,7 +2,7 @@
 # Multi-stage build for optimized container size
 
 # Build stage
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # Install system dependencies needed for building
 RUN apt-get update && apt-get install -y \
@@ -23,16 +23,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Production stage
 FROM python:3.11-slim
 
-# Install runtime dependencies for SQL Server ODBC driver
+# Install runtime dependencies for SQL Server ODBC driver on Debian 12 (Bookworm)
 RUN apt-get update && apt-get install -y \
     curl \
     gnupg \
+    ca-certificates \
     unixodbc \
-    unixodbc-dev \
-    && curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - \
-    && curl https://packages.microsoft.com/config/debian/11/prod.list > /etc/apt/sources.list.d/mssql-release.list \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg \
+    && chmod a+r /etc/apt/keyrings/microsoft.gpg \
+    && echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y msodbcsql17 \
+    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -47,7 +49,6 @@ RUN chown zonetracker:zonetracker /app
 
 # Copy application code
 COPY --chown=zonetracker:zonetracker *.py ./
-COPY --chown=zonetracker:zonetracker environment_variables_example.txt ./
 
 # Switch to non-root user
 USER zonetracker
@@ -64,4 +65,4 @@ HEALTHCHECK --interval=5m --timeout=30s --start-period=60s --retries=3 \
     CMD python -c "import sys; sys.exit(0)" || exit 1
 
 # Default command
-CMD ["python", "zone_tracker_main.py"] 
+CMD ["python", "zone_tracker_main.py"]

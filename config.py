@@ -11,7 +11,7 @@ DB_CONFIG = {
     'database': os.getenv('DB_DATABASE', 'FXStrat'),  # Main database for writing zones/indicators
     'username': os.getenv('DB_USERNAME', 'djaime'),
     'password': os.getenv('DB_PASSWORD', 'Enrique30072000!3'),
-    'driver': os.getenv('DB_DRIVER', 'ODBC Driver 17 for SQL Server')
+    'driver': os.getenv('DB_DRIVER', 'ODBC Driver 18 for SQL Server')
 }
 
 # Historical data database configuration (where HistoData table is located)
@@ -20,7 +20,7 @@ HISTODATA_CONFIG = {
     'database': os.getenv('HISTODATA_DATABASE', 'TTG'),  # TTG database for HistoData table
     'username': os.getenv('HISTODATA_USERNAME', os.getenv('DB_USERNAME', 'djaime')),  # Same credentials by default
     'password': os.getenv('HISTODATA_PASSWORD', os.getenv('DB_PASSWORD', 'Enrique30072000!3')),
-    'driver': os.getenv('HISTODATA_DRIVER', os.getenv('DB_DRIVER', 'ODBC Driver 17 for SQL Server'))
+    'driver': os.getenv('HISTODATA_DRIVER', os.getenv('DB_DRIVER', 'ODBC Driver 18 for SQL Server'))
 }
 
 # Backward compatibility - remove this after updating database_manager.py

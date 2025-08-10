@@ -65,4 +65,4 @@ HEALTHCHECK --interval=5m --timeout=30s --start-period=60s --retries=3 \
     CMD python -c "import sys; sys.exit(0)" || exit 1
 
 # Default command
-CMD ["python", "zone_tracker_main.py"]
+CMD ["python", "zone_tracker_main.py"] 

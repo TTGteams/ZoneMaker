@@ -198,7 +198,7 @@ def identify_liquidity_zones(data: pd.DataFrame,
     if cumulative_zone_info is None:
         cumulative_zone_info = {}
     
-    logger.info(f"Identifying zones for {currency}: Processing {len(data)} bars, existing zones: {len(current_valid_zones_dict)}")
+    logger.debug(f"Identifying zones for {currency}: Processing {len(data)} bars, existing zones: {len(current_valid_zones_dict)}")
     
     # Ensure currency is initialized in cumulative_zone_info
     if currency not in cumulative_zone_info:
@@ -223,7 +223,7 @@ def identify_liquidity_zones(data: pd.DataFrame,
     else:
         dynamic_pips_required = calculate_atr_pips_required(data, currency)
     
-    logger.info(f"Dynamic pip threshold: {dynamic_pips_required*10000:.1f} pips")
+    logger.debug(f"Dynamic pip threshold: {dynamic_pips_required*10000:.1f} pips")
 
     # Add candle direction column
     data['candle_direction'] = np.where(data['close'] > data['open'], 'green', 
@@ -274,7 +274,7 @@ def identify_liquidity_zones(data: pd.DataFrame,
 
             # Check if movement meets dynamic pip requirement
             if abs(total_move) >= dynamic_pips_required:
-                logger.info(f"ZONE QUALIFICATION: Move={abs(total_move)*10000:.1f} pips >= Required={dynamic_pips_required*10000:.1f} pips")
+                logger.debug(f"ZONE QUALIFICATION: Move={abs(total_move)*10000:.1f} pips >= Required={dynamic_pips_required*10000:.1f} pips")
                 zone_type = 'demand' if current_run['direction'] == 'green' else 'supply'
                 
                 if zone_type == 'demand':
@@ -334,7 +334,7 @@ def identify_liquidity_zones(data: pd.DataFrame,
                 # Reset run after creating zone
                 current_run = None
             elif abs(total_move) >= dynamic_pips_required * 0.7:  # Log rejections close to threshold
-                logger.info(f"ZONE REJECTED: Move={abs(total_move)*10000:.1f} pips < Required={dynamic_pips_required*10000:.1f} pips")
+                logger.debug(f"ZONE REJECTED: Move={abs(total_move)*10000:.1f} pips < Required={dynamic_pips_required*10000:.1f} pips")
 
         else:
             # Direction changed, reset the run
@@ -350,15 +350,12 @@ def identify_liquidity_zones(data: pd.DataFrame,
     # Save current run state for next window
     cumulative_zone_info[currency] = current_run
     
-    logger.info(f"ZONE DETECTION RESULTS: New zones: {new_zones_detected}, Total: {len(current_valid_zones_dict)}")
+    logger.debug(f"ZONE DETECTION RESULTS: New zones: {new_zones_detected}, Total: {len(current_valid_zones_dict)}")
     
-    # Debug the zones that have been successfully constructed
-    if len(current_valid_zones_dict) > 0:
-        logger.warning(f"Current zones (count: {len(current_valid_zones_dict)}):")
-        for zone_key, zone_data in list(current_valid_zones_dict.items())[:5]:  # Show up to 5 zones
-            if isinstance(zone_data, dict) and 'zone_type' in zone_data:
-                logger.warning(f"  {zone_data['zone_type'].upper()} zone: {zone_key[0]:.5f}-{zone_key[1]:.5f}")
-            else:
-                logger.warning(f"  Invalid zone structure: {zone_key}")
+    # Log current zones summary at debug level
+    if current_valid_zones_dict:
+        logger.debug(f"Current zones (count: {len(current_valid_zones_dict)}):")
+        for zone_id, zone in current_valid_zones_dict.items():
+            logger.debug(f"  {zone['zone_type']} zone: {zone['start_price']:.5f}-{zone['end_price']:.5f}")
 
     return data, current_valid_zones_dict 

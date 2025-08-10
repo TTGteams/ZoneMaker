@@ -79,8 +79,12 @@ class ZoneAndIndicatorProcessor:
         
         # Cache ATR values per currency (recalculated every 15 minutes)
         self.current_atr = {currency: None for currency in SUPPORTED_CURRENCIES}
+        
+        # Track bars processed for hourly summaries (4 bars = 1 hour)
+        self.bars_processed_count = {currency: 0 for currency in SUPPORTED_CURRENCIES}
+        self.last_hourly_summary = {currency: None for currency in SUPPORTED_CURRENCIES}
     
-    def load_initial_data(self, currency: str, limit: int = 150000) -> bool:
+    def load_initial_data(self, currency: str, limit: int = 75000) -> bool:
         """
         Load initial historical data for a currency and process tick-by-tick
         
@@ -93,10 +97,14 @@ class ZoneAndIndicatorProcessor:
         """
         try:
             query = f"""
-                SELECT TOP ({limit}) BarDateTime, Open, High, Low, Close, ByWhen
-                FROM HistoData
-                WHERE Cur = ?
-                ORDER BY BarDateTime ASC
+                SELECT [BarDateTime], [Open], [High], [Low], [Close], [ByWhen]
+                FROM (
+                    SELECT TOP ({limit}) [BarDateTime], [Open], [High], [Low], [Close], [ByWhen]
+                    FROM [HistoData] WITH (NOLOCK)
+                    WHERE [Identifier] = ?
+                    ORDER BY [BarDateTime] DESC
+                ) AS recent_data
+                ORDER BY [BarDateTime] ASC
             """
             
             df = db_manager.execute_query_to_dataframe(
@@ -110,7 +118,7 @@ class ZoneAndIndicatorProcessor:
                 return False
             
             # Process data tick-by-tick (chronological order)
-            logger.info(f"Processing {len(df)} historical bars tick-by-tick for {currency}")
+            logger.debug(f"Processing {len(df)} historical bars tick-by-tick for {currency}")
             
             for index, row in df.iterrows():
                 # Calculate midpoint as "tick price"
@@ -124,9 +132,9 @@ class ZoneAndIndicatorProcessor:
             if not df.empty:
                 self.last_processed_timestamp[currency] = pd.to_datetime(df.iloc[-1]['ByWhen'])
             
-            logger.info(f"Completed tick-by-tick processing for {currency}")
-            logger.info(f"Built {len(self.bars_15min[currency])} 15-minute bars")
-            logger.info(f"Active zones: {len(self.current_zones[currency])}")
+            logger.debug(f"Completed tick-by-tick processing for {currency}")
+            logger.debug(f"Built {len(self.bars_15min[currency])} 15-minute bars")
+            logger.debug(f"Active zones: {len(self.current_zones[currency])}")
             
             return True
             
@@ -153,10 +161,10 @@ class ZoneAndIndicatorProcessor:
                 return False
             
             query = """
-                SELECT BarDateTime, Open, High, Low, Close, ByWhen
-                FROM HistoData
-                WHERE Cur = ? AND ByWhen > ?
-                ORDER BY BarDateTime ASC
+                SELECT [BarDateTime], [Open], [High], [Low], [Close], [ByWhen]
+                FROM [HistoData]
+                WHERE [Identifier] = ? AND [ByWhen] > ?
+                ORDER BY [BarDateTime] ASC
             """
             
             df = db_manager.execute_query_to_dataframe(
@@ -166,10 +174,10 @@ class ZoneAndIndicatorProcessor:
             )
             
             if df is None or df.empty:
-                logger.info(f"No new data available for {currency}")
+                logger.debug(f"No new data available for {currency}")
                 return True
             
-            logger.info(f"Processing {len(df)} new bars for {currency}")
+            logger.debug(f"Processing {len(df)} new bars for {currency}")
             
             # Process each new bar as a tick
             for index, row in df.iterrows():
@@ -181,7 +189,7 @@ class ZoneAndIndicatorProcessor:
             # Update last processed timestamp
             self.last_processed_timestamp[currency] = pd.to_datetime(df.iloc[-1]['ByWhen'])
             
-            logger.info(f"Processed {len(df)} new ticks for {currency}")
+            logger.debug(f"Processed {len(df)} new ticks for {currency}")
             return True
             
         except Exception as e:
@@ -682,10 +690,55 @@ class ZoneAndIndicatorProcessor:
             self._store_indicators(indicators_data, currency)
             self._store_zones(currency)
             
-            logger.info(f"Processed completed bar for {currency}: {len(self.current_zones[currency])} active zones")
+            # Increment bar counter and check for hourly summary
+            self.bars_processed_count[currency] += 1
+            
+            # Log hourly summary after every 4 bars (1 hour of data)
+            if self.bars_processed_count[currency] >= 4:
+                self._log_hourly_summary(currency)
+                self.bars_processed_count[currency] = 0  # Reset counter
+            
+            logger.debug(f"Processed completed bar for {currency}: {len(self.current_zones[currency])} active zones")
             
         except Exception as e:
             logger.error(f"Error processing completed bar for {currency}: {e}")
+    
+    def _log_hourly_summary(self, currency: str):
+        """Log hourly summary after processing 4 bars (1 hour) of data"""
+        try:
+            # Get current stats
+            active_zones = len(self.current_zones[currency])
+            total_bars = len(self.bars_15min[currency])
+            
+            # Zone breakdown
+            supply_zones = sum(1 for z in self.current_zones[currency].values() if z.get('zone_type') == 'supply')
+            demand_zones = sum(1 for z in self.current_zones[currency].values() if z.get('zone_type') == 'demand')
+            
+            # Get simulation stats
+            sim_trades = self.simulation_trades[currency]
+            if sim_trades:
+                recent_trades = [t for t in sim_trades[-10:]]  # Last 10 trades
+                wins = sum(1 for t in recent_trades if t.get('profit_loss', 0) > 0)
+                win_rate = (wins / len(recent_trades) * 100) if recent_trades else 0
+            else:
+                win_rate = 0
+                recent_trades = []
+            
+            balance = self.simulation_balance[currency]
+            
+            # Log summary
+            logger.info(f"{'='*60}")
+            logger.info(f"HOURLY SUMMARY - {currency}")
+            logger.info(f"{'='*60}")
+            logger.info(f"Active Zones: {active_zones} (Supply: {supply_zones}, Demand: {demand_zones})")
+            logger.info(f"Total Bars Processed: {total_bars}")
+            logger.info(f"Simulation Balance: ${balance:,.2f}")
+            if recent_trades:
+                logger.info(f"Recent Win Rate: {win_rate:.1f}% (last {len(recent_trades)} trades)")
+            logger.info(f"{'='*60}")
+            
+        except Exception as e:
+            logger.error(f"Error generating hourly summary for {currency}: {e}")
     
     def get_last_processed_timestamp(self, currency: str) -> Optional[datetime]:
         """Get the last processed timestamp for a currency"""
@@ -759,12 +812,32 @@ class ZoneAndIndicatorProcessor:
             success = db_manager.batch_insert('IndicatorTracker', indicator_records)
             
             if success:
-                logger.info(f"Stored {len(indicator_records)} indicator records for {currency}")
+                # Lower verbosity: log at debug level to avoid noise
+                logger.debug(f"Stored {len(indicator_records)} indicator records for {currency}")
+                return True
+            
+            # If batch insert failed (e.g., duplicates), fall back to per-row insert with duplicate ignore
+            # Build a minimal upsert/ignore by trying row-by-row and ignoring duplicate key errors
+            inserted = 0
+            for rec in indicator_records:
+                try:
+                    # Attempt single insert
+                    single_ok = db_manager.batch_insert('IndicatorTracker', [rec])
+                    if single_ok:
+                        inserted += 1
+                except Exception as single_e:
+                    # Ignore duplicate key errors, log others
+                    msg = str(single_e)
+                    if 'duplicate key' in msg or '2601' in msg or '2627' in msg:
+                        continue
+                    logger.error(f"Indicator insert error ({currency}): {single_e}")
+            if inserted > 0:
+                logger.debug(f"Stored {inserted}/{len(indicator_records)} indicator rows for {currency} (duplicates ignored)")
+                return True
             else:
                 logger.error(f"Failed to store indicator records for {currency}")
-            
-            return success
-            
+                return False
+        
         except Exception as e:
             logger.error(f"Error storing indicators for {currency}: {e}")
             return False
@@ -844,7 +917,7 @@ class ZoneAndIndicatorProcessor:
                     db_manager.execute_non_query(deactivate_query, 
                                                params=(currency, start_price, end_price, zone_type, confirmation_time))
                 
-                logger.info(f"Deactivated {len(zones_to_deactivate)} zones for {currency}")
+                logger.debug(f"Deactivated {len(zones_to_deactivate)} zones for {currency}")
             
             # Insert new zones
             if new_zone_records:

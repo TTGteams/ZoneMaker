@@ -40,7 +40,7 @@ class DatabaseManager:
             
             try:
                 self._connection = pyodbc.connect(conn_str, autocommit=False)
-                self._connection.timeout = 30
+                self._connection.timeout = 300
                 logger.info(f"Successfully connected to {database_name} on {DB_CONFIG['server']}")
             except Exception as e:
                 logger.error(f"Database connection error: {e}")
@@ -66,7 +66,7 @@ class DatabaseManager:
             
             try:
                 self._histodata_connection = pyodbc.connect(conn_str, autocommit=False)
-                self._histodata_connection.timeout = 30
+                self._histodata_connection.timeout = 300
                 logger.info(f"Successfully connected to {HISTODATA_CONFIG['database']} on {HISTODATA_CONFIG['server']}")
             except Exception as e:
                 logger.error(f"HistoData database connection error: {e}")
@@ -227,6 +227,17 @@ class DatabaseManager:
             return True
             
         except Exception as e:
+            # Check if this is a duplicate key error
+            error_msg = str(e)
+            if 'duplicate key' in error_msg.lower() or '2601' in error_msg or '2627' in error_msg:
+                # Silently fail for duplicates - this is expected behavior
+                try:
+                    connection.rollback()
+                except:
+                    pass
+                return False
+            
+            # Log other errors
             logger.error(f"Batch insert error: {e}")
             logger.error(f"Table: {table_name}, Rows: {len(data)}")
             try:

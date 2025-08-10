@@ -256,9 +256,9 @@ class ZoneTrackerScheduler:
         """Log system status periodically"""
         current_time = datetime.now()
         
-        # Log status every 30 minutes
+        # Log status every 60 minutes
         if (self.last_status_log is None or 
-            current_time - self.last_status_log > timedelta(minutes=30)):
+            current_time - self.last_status_log > timedelta(minutes=60)):
             
             self._log_system_status()
             self.last_status_log = current_time

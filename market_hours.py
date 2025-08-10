@@ -5,7 +5,6 @@ Determines if FX market is open (Sunday 3pm MST to Friday 3pm MST)
 
 import datetime
 import pytz
-from typing import bool
 
 def is_market_open() -> bool:
     """

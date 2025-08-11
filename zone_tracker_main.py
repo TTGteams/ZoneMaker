@@ -112,21 +112,27 @@ class ZoneTrackerScheduler:
     def _is_first_run(self) -> bool:
         """Determine if this is the first run"""
         try:
-            # Check if any currency has processed data
-            for currency in SUPPORTED_CURRENCIES:
-                last_timestamp = zone_processor.get_last_processed_timestamp(currency)
-                if last_timestamp is not None:
-                    return False
-            
-            # Check if we have any zones or indicators in database
+            # Primary check: Look for existing data in database
+            # This is more reliable than memory state which is always empty on startup
             zone_count = db_manager.execute_query("SELECT COUNT(*) FROM ZoneTracker WHERE IsActive = 1")
             indicator_count = db_manager.execute_query("SELECT COUNT(*) FROM IndicatorTracker")
             
+            # If we have any zones or indicators in database, this is NOT a first run
             if zone_count and zone_count[0][0] > 0:
+                logger.info(f"Found {zone_count[0][0]} active zones in database - subsequent run")
                 return False
             if indicator_count and indicator_count[0][0] > 0:
+                logger.info(f"Found {indicator_count[0][0]} indicators in database - subsequent run")
                 return False
             
+            # Secondary check: Memory state (only relevant if database is empty)
+            for currency in SUPPORTED_CURRENCIES:
+                last_timestamp = zone_processor.get_last_processed_timestamp(currency)
+                if last_timestamp is not None:
+                    logger.info(f"Found last timestamp for {currency} in memory - subsequent run")
+                    return False
+            
+            logger.info("No existing data found in database or memory - first run")
             return True
             
         except Exception as e:
@@ -166,13 +172,43 @@ class ZoneTrackerScheduler:
         """Initialize system for incremental run"""
         logger.info("Initializing incremental processing...")
         
-        # Log last processed timestamps
+        # Check if we need to load initial data for currencies without timestamps
+        currencies_needing_init = []
+        
         for currency in SUPPORTED_CURRENCIES:
             last_timestamp = zone_processor.get_last_processed_timestamp(currency)
             if last_timestamp:
                 logger.info(f"{currency}: Last processed timestamp = {last_timestamp}")
             else:
-                logger.warning(f"{currency}: No last timestamp found, will treat as first run")
+                logger.warning(f"{currency}: No last timestamp found, loading initial data")
+                currencies_needing_init.append(currency)
+        
+        # Load initial data for currencies that need it
+        if currencies_needing_init:
+            logger.info(f"Loading initial data for {len(currencies_needing_init)} currencies: {currencies_needing_init}")
+            
+            success_count = 0
+            for currency in currencies_needing_init:
+                try:
+                    logger.info(f"Loading historical data for {currency}...")
+                    success = zone_processor.load_initial_data(currency)
+                    
+                    if success:
+                        success_count += 1
+                        logger.info(f"Successfully loaded initial data for {currency}")
+                    else:
+                        logger.error(f"Failed to load initial data for {currency}")
+                        self.error_count[currency] += 1
+                        
+                except Exception as e:
+                    logger.error(f"Error loading initial data for {currency}: {e}", exc_info=True)
+                    self.error_count[currency] += 1
+            
+            if success_count == 0:
+                logger.error("Failed to load initial data for any currencies")
+                return False
+            
+            logger.info(f"Loaded initial data for {success_count}/{len(currencies_needing_init)} currencies")
         
         self.initialization_complete = True
         return True

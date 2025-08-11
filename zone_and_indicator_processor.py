@@ -66,6 +66,9 @@ class ZoneAndIndicatorProcessor:
         # Initialize cumulative zone info (needed for algorithm.py functions)
         self.cumulative_zone_info = {currency: None for currency in SUPPORTED_CURRENCIES}
         
+        # Track invalidated zones to prevent immediate recreation
+        self.invalidated_zones = {currency: {} for currency in SUPPORTED_CURRENCIES}  # {zone_id: invalidation_time}
+        
         # Simple zone validation trades (lightweight - no position sizing)
         self.zone_validation_trades = {currency: [] for currency in SUPPORTED_CURRENCIES}
         
@@ -79,7 +82,7 @@ class ZoneAndIndicatorProcessor:
         
         # Cache ATR values per currency (recalculated every 15 minutes)
         self.current_atr = {currency: None for currency in SUPPORTED_CURRENCIES}
-        
+    
         # Track bars processed for hourly summaries (4 bars = 1 hour)
         self.bars_processed_count = {currency: 0 for currency in SUPPORTED_CURRENCIES}
         self.last_hourly_summary = {currency: None for currency in SUPPORTED_CURRENCIES}
@@ -277,6 +280,9 @@ class ZoneAndIndicatorProcessor:
                     # Trim to prevent memory overflow
                     if len(self.bars_15min[currency]) > MAX_MEMORY_ROWS:
                         self.bars_15min[currency] = self.bars_15min[currency].tail(MAX_MEMORY_ROWS)
+                    
+                    # Trim other memory structures to prevent unbounded growth
+                    self._trim_memory_structures(currency)
                 
                 # Start new bar
                 self.current_bar_start[currency] = bar_time
@@ -360,9 +366,11 @@ class ZoneAndIndicatorProcessor:
                         zones_to_remove.append(zone_id)
                         logger.info(f"Marking {currency} zone {zone_id} for removal due to {len(zone_losses)} losses")
             
-            # Remove problematic zones
+            # Remove problematic zones and track their invalidation
             for zone_id in zones_to_remove:
                 if zone_id in self.current_zones[currency]:
+                    # Track invalidation time to prevent immediate recreation
+                    self.invalidated_zones[currency][zone_id] = tick_time
                     del self.current_zones[currency][zone_id]
                     logger.info(f"Removed problematic {currency} zone: {zone_id}")
                     
@@ -673,15 +681,31 @@ class ZoneAndIndicatorProcessor:
             atr_value = calculate_atr_pips_required(data, currency)
             self.current_atr[currency] = atr_value  # Cache for tick-level usage
             
-            processed_data, updated_zones = identify_liquidity_zones(
+            processed_data, detected_zones = identify_liquidity_zones(
                 data, 
                 self.current_zones[currency], 
                 currency, 
                 atr_value
             )
             
-            if updated_zones is not None:
-                self.current_zones[currency] = updated_zones
+            if detected_zones is not None:
+                # Only merge NEW zones that don't already exist (prevents recreation from historical data)
+                new_zones_count = 0
+                for zone_id, zone_data in detected_zones.items():
+                    if zone_id not in self.current_zones[currency]:
+                        # Check if this zone was recently invalidated
+                        if not self._is_zone_recently_invalidated(zone_id, zone_data, currency):
+                            self.current_zones[currency][zone_id] = zone_data
+                            new_zones_count += 1
+                            logger.warning(f"NEW {currency} {zone_data['zone_type'].upper()} ZONE: "
+                                         f"Start={zone_data['start_price']:.5f}, End={zone_data['end_price']:.5f}, "
+                                         f"Size={abs(zone_data['end_price'] - zone_data['start_price'])*10000:.1f} pips, "
+                                         f"Time={zone_data['confirmation_time']}")
+                
+                if new_zones_count > 0:
+                    logger.info(f"Added {new_zones_count} new zones for {currency}")
+                else:
+                    logger.debug(f"No new zones detected for {currency}")
             
             # Note: Support/resistance invalidation now happens on every tick
             # in _process_single_tick for realistic trading simulation
@@ -795,7 +819,7 @@ class ZoneAndIndicatorProcessor:
     
     def _store_indicators(self, indicator_records: List[Dict[str, Any]], currency: str) -> bool:
         """
-        Store indicator data in IndicatorTracker table
+        Store indicator data with improved duplicate handling
         
         Args:
             indicator_records: List of indicator records
@@ -808,38 +832,32 @@ class ZoneAndIndicatorProcessor:
             return True
         
         try:
-            # Use batch insert for efficiency
+            # Try batch insert first
             success = db_manager.batch_insert('IndicatorTracker', indicator_records)
-            
             if success:
-                # Lower verbosity: log at debug level to avoid noise
                 logger.debug(f"Stored {len(indicator_records)} indicator records for {currency}")
                 return True
             
-            # If batch insert failed (e.g., duplicates), fall back to per-row insert with duplicate ignore
-            # Build a minimal upsert/ignore by trying row-by-row and ignoring duplicate key errors
+            # Batch failed - try individual inserts and count successes
             inserted = 0
             for rec in indicator_records:
                 try:
-                    # Attempt single insert
-                    single_ok = db_manager.batch_insert('IndicatorTracker', [rec])
-                    if single_ok:
+                    if db_manager.batch_insert('IndicatorTracker', [rec]):
                         inserted += 1
-                except Exception as single_e:
-                    # Ignore duplicate key errors, log others
-                    msg = str(single_e)
-                    if 'duplicate key' in msg or '2601' in msg or '2627' in msg:
-                        continue
-                    logger.error(f"Indicator insert error ({currency}): {single_e}")
-            if inserted > 0:
-                logger.debug(f"Stored {inserted}/{len(indicator_records)} indicator rows for {currency} (duplicates ignored)")
-                return True
+                except Exception:
+                    # Silently skip duplicates and other non-critical errors
+                    continue
+            
+            # Only log error if NO records were inserted
+            if inserted == 0:
+                logger.warning(f"No indicator records stored for {currency} (likely all duplicates)")
             else:
-                logger.error(f"Failed to store indicator records for {currency}")
-                return False
-        
+                logger.debug(f"Stored {inserted}/{len(indicator_records)} indicators for {currency}")
+            
+            return inserted > 0
+            
         except Exception as e:
-            logger.error(f"Error storing indicators for {currency}: {e}")
+            logger.error(f"Critical error storing indicators for {currency}: {e}")
             return False
     
     def _store_zones(self, currency: str) -> bool:
@@ -1016,6 +1034,88 @@ class ZoneAndIndicatorProcessor:
             }
         
         return stats
+    
+    def _trim_memory_structures(self, currency: str) -> None:
+        """Trim all memory structures to prevent overflow during long processing runs"""
+        try:
+            # Trim trade validation records to last 1000 entries
+            if len(self.zone_validation_trades[currency]) > 1000:
+                self.zone_validation_trades[currency] = self.zone_validation_trades[currency][-1000:]
+            
+            # Trim simulation trades to last 1000 entries  
+            if len(self.simulation_trades[currency]) > 1000:
+                self.simulation_trades[currency] = self.simulation_trades[currency][-1000:]
+            
+            # Trim tick_data if it exists and gets large
+            if not self.tick_data[currency].empty and len(self.tick_data[currency]) > MAX_MEMORY_ROWS:
+                self.tick_data[currency] = self.tick_data[currency].tail(MAX_MEMORY_ROWS)
+                
+            # Trim price_data if it exists and gets large
+            if not self.price_data[currency].empty and len(self.price_data[currency]) > MAX_MEMORY_ROWS:
+                self.price_data[currency] = self.price_data[currency].tail(MAX_MEMORY_ROWS)
+            
+            # Clean up invalidated zones tracking (keep max 10 entries, remove older than 2 hours)
+            self._cleanup_invalidated_zones(currency)
+                
+        except Exception as e:
+            logger.error(f"Error trimming memory structures for {currency}: {e}")
+    
+    def _is_zone_recently_invalidated(self, zone_id: tuple, zone_data: Dict, currency: str) -> bool:
+        """
+        Check if a zone was recently invalidated to prevent immediate recreation
+        Only blocks recreation if zone confirmation time is NOT after invalidation
+        """
+        try:
+            if zone_id not in self.invalidated_zones[currency]:
+                return False  # Zone was never invalidated
+                
+            invalidation_time = self.invalidated_zones[currency][zone_id]
+            zone_confirmation_time = zone_data.get('confirmation_time', datetime.now())
+            
+            # Allow recreation if zone confirmation is AFTER invalidation (new data)
+            if zone_confirmation_time > invalidation_time:
+                # Remove from invalidated list since it's now valid with new data
+                del self.invalidated_zones[currency][zone_id]
+                logger.info(f"Allowing recreation of {currency} zone {zone_id} - confirmed with new data after invalidation")
+                return False
+            else:
+                # Block recreation - same historical data
+                logger.debug(f"Blocking recreation of {currency} zone {zone_id} - same historical data")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error checking zone invalidation for {currency}: {e}")
+            return False  # Allow on error
+    
+    def _cleanup_invalidated_zones(self, currency: str) -> None:
+        """
+        Clean up invalidated zones tracking to prevent memory leaks
+        - Remove entries older than 2 hours
+        - Keep maximum 10 most recent entries
+        """
+        try:
+            if currency not in self.invalidated_zones or not self.invalidated_zones[currency]:
+                return
+                
+            current_time = datetime.now()
+            cutoff_time = current_time - pd.Timedelta(hours=2)
+            
+            # Remove old entries (older than 2 hours)
+            old_zones = [zone_id for zone_id, inv_time in self.invalidated_zones[currency].items() 
+                        if inv_time < cutoff_time]
+            for zone_id in old_zones:
+                del self.invalidated_zones[currency][zone_id]
+            
+            # Keep only the 10 most recent entries if we still have too many
+            if len(self.invalidated_zones[currency]) > 10:
+                # Sort by invalidation time (most recent first) and keep top 10
+                sorted_zones = sorted(self.invalidated_zones[currency].items(), 
+                                    key=lambda x: x[1], reverse=True)
+                self.invalidated_zones[currency] = dict(sorted_zones[:10])
+                logger.debug(f"Trimmed invalidated zones for {currency} to 10 most recent entries")
+                
+        except Exception as e:
+            logger.error(f"Error cleaning up invalidated zones for {currency}: {e}")
 
 # Global processor instance
 zone_processor = ZoneAndIndicatorProcessor() 
